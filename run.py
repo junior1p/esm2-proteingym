@@ -8,19 +8,21 @@ Usage:
     python run.py --model 650M --validate                   # Full 650M model + ProteinGym
     python run.py --model 35M --output-dir results/my_run   # Custom output dir
 """
+import sys
+import os
+
+# Force unbuffered output
+sys.stdout.reconfigure(line_buffering=True)
+sys.stderr.reconfigure(line_buffering=True)
+
+# Use HuggingFace mirror in mainland China
+os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
 
 import argparse
-import os
-import sys
 
-# Demo protein: GFP (Green Fluorescent Protein) — UniProt P42212
-# Sarkisyan et al. 2016 GFP DMS is the most complete assay in ProteinGym
-DEMO_SEQUENCE = (
-    "MSKGEELFTGVVPILVELDGDVNGHKFSVSGEGEGDATYGKLTLKFICTTGKLPVPWPTL"
-    "VTTLTYGVQCFSRYPDHMKQHDFFKSAMPEGYVQERTIFFKDDGNYKTRAEVKFEGDTLVN"
-    "RIELKGIDFKEDGNILGHKLEYNYNSHNVYIMADKQKNGIKVNFKIRHNIEDGSVQLADHY"
-    "QQNTPIGDGPVLLPDNHYLSTQSALSKDPNEKRDHMVLLEFVTAAGITLGMDELYK"
-)
+# Demo protein: KALP peptide (16 aa) — small, fast, validates full pipeline
+# Use GFP (P42212) with --uniprot for full benchmark validation
+DEMO_SEQUENCE = "KALPGTDPAALGDDD"  # 15 aa → 285 mutants, ~10-30 min on CPU 35M
 
 MODEL_HELP = "35M (fast, ~5min), 150M, 650M (recommended), or 3B (best accuracy)"
 
