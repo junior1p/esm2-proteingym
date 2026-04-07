@@ -146,7 +146,18 @@ biopython>=1.80     # BioPython utilities
 scikit-learn>=1.3   # AUC-ROC computation
 ```
 
-**Python 3.9+ required. GPU recommended for sequences >300 aa or for 650M model.**
+**Python 3.9+ required. GPU strongly recommended for sequences >200 aa.**
+
+| Sequence Length | Model | Device | Time (estimated) |
+|----------------|-------|--------|-----------------|
+| 15 aa (~285 mutants) | 35M | CPU | ~5 min |
+| 238 aa GFP (~4,522 mutants) | 35M | CPU | ~4-6 hours |
+| 238 aa GFP (~4,522 mutants) | 35M | GPU | ~5 min |
+| 238 aa GFP (~4,522 mutants) | 650M | GPU | ~20 min |
+
+> ⚠️ **CPU-only warning**: Without GPU, ESM-2 inference is very slow on CPU (~1-5 sec/mutant).
+> For sequences >200 aa on CPU, use model `35M` and expect long run times.
+> GFP with 35M on CPU: ~4-6 hours. With GPU (650M): ~20 minutes.
 
 For中国大陆用户，使用镜像安装：
 ```bash
