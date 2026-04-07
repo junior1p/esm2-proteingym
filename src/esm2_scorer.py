@@ -22,48 +22,80 @@ MODEL_MAP = {
 
 def load_esm2_model(model_name: str = "facebook/esm2_t33_650M_UR50D"):
     """Load ESM-2 model and tokenizer."""
-    print(f"Loading {model_name}...")
+    print(f"Loading {model_name}...", flush=True)
     tokenizer = EsmTokenizer.from_pretrained(model_name)
     model = EsmForMaskedLM.from_pretrained(model_name)
     model.eval()
     device = "cuda" if torch.cuda.is_available() else "cpu"
     model = model.to(device)
-    print(f"Model loaded on {device}")
+    print(f"Model loaded on {device}", flush=True)
     return model, tokenizer, device
 
 
-def score_masked_marginal(
+def score_masked_marginal_batch(
     sequence: str,
-    position: int,
-    mut_aa: str,
+    mutants: list[dict],
     model,
     tokenizer,
-    device: str
-) -> float:
-    """Compute masked marginal LLR for a single mutant at a given position.
+    device: str,
+    batch_size: int = 1,
+    progress_every: int = 100
+) -> list[dict]:
+    """Score all mutants using per-mutant masked marginal scoring with no_grad forward.
     
-    score = log p(mut_aa | context) - log p(wt_aa | context)
-    Positive = likely beneficial; Negative = likely deleterious.
+    Each mutant gets its own forward pass (batch_size=1 to avoid padding overhead).
+    With ESM-2 35M on CPU: ~1-3 sec/mutant → GFP 4522 mutants ≈ 1.5-4.5 hours.
+    
+    Use batch_size > 1 only if you have a GPU (avoids CPU padding overhead).
     """
-    wt_aa = sequence[position]
+    n = len(sequence)
     
-    # Create masked sequence: replace position with <mask>
-    masked_seq = sequence[:position] + "<mask>" + sequence[position+1:]
+    # Compute WT log-probs: one forward per position
+    print("Computing wild-type log-probs...", flush=True)
+    wt_log_probs = []
+    for i in range(n):
+        masked_seq = sequence[:i] + "<mask>" + sequence[i+1:]
+        inputs = tokenizer(masked_seq, return_tensors="pt").to(device)
+        mask_token_id = tokenizer.mask_token_id
+        mask_pos = (inputs["input_ids"] == mask_token_id).nonzero(as_tuple=True)[0]
+        
+        with torch.no_grad():
+            logits = model(**inputs).logits
+        # logits shape: (1, seq_len, vocab_size); mask_pos[0] is the position
+        log_probs = torch.nn.functional.log_softmax(logits[0, mask_pos[0]], dim=-1)
+        wt_token_id = tokenizer.convert_tokens_to_ids(sequence[i])
+        wt_log_probs.append(log_probs[wt_token_id].item())
+        
+        if (i + 1) % 50 == 0:
+            print(f"  WT pos {i+1}/{n}...", flush=True)
     
-    # Tokenize
-    inputs = tokenizer(masked_seq, return_tensors="pt").to(device)
-    mask_token_id = tokenizer.mask_token_id
-    mask_positions = (inputs["input_ids"] == mask_token_id).nonzero(as_tuple=True)
+    print(f"WT log-probs computed for {n} positions", flush=True)
     
-    with torch.no_grad():
-        logits = model(**inputs).logits  # (1, seq_len, vocab_size)
-    log_probs = torch.nn.functional.log_softmax(logits[0, mask_positions[0]], dim=-1)
+    # Score all mutants
+    results = []
+    total = len(mutants)
+    scored = 0
     
-    wt_token_id = tokenizer.convert_tokens_to_ids(wt_aa)
-    mut_token_id = tokenizer.convert_tokens_to_ids(mut_aa)
+    for m in mutants:
+        pos = m["position"] - 1
+        masked_seq = sequence[:pos] + "<mask>" + sequence[pos+1:]
+        inputs = tokenizer(masked_seq, return_tensors="pt").to(device)
+        mask_token_id = tokenizer.mask_token_id
+        mask_pos = (inputs["input_ids"] == mask_token_id).nonzero(as_tuple=True)[0]
+        
+        with torch.no_grad():
+            logits = model(**inputs).logits
+        log_probs = torch.nn.functional.log_softmax(logits[0, mask_pos[0]], dim=-1)
+        mut_token_id = tokenizer.convert_tokens_to_ids(m["mut_aa"])
+        llr = (log_probs[mut_token_id] - wt_log_probs[pos]).item()
+        results.append({**m, "esm2_score": llr})
+        
+        scored += 1
+        if scored % progress_every == 0:
+            pct = scored / total * 100
+            print(f"  Scored {scored}/{total} ({pct:.0f}%)...", flush=True)
     
-    llr = (log_probs[0, mut_token_id] - log_probs[0, wt_token_id]).item()
-    return llr
+    return results
 
 
 def score_all_mutants(
@@ -75,37 +107,21 @@ def score_all_mutants(
     batch_report_every: int = 100
 ) -> list[dict]:
     """Score all mutants using ESM-2 masked marginal scoring."""
-    results = []
-    for i, m in enumerate(mutants):
-        score = score_masked_marginal(
-            sequence=sequence,
-            position=m["position"] - 1,  # convert to 0-indexed
-            mut_aa=m["mut_aa"],
-            model=model,
-            tokenizer=tokenizer,
-            device=device
-        )
-        results.append({**m, "esm2_score": score})
-        if (i + 1) % batch_report_every == 0:
-            print(f"  Scored {i+1}/{len(mutants)} mutants...")
-    return results
+    return score_masked_marginal_batch(
+        sequence, mutants, model, tokenizer, device,
+        batch_size=1, progress_every=batch_report_every
+    )
 
 
 def run_scorer(sequence: str, model_size: str = "650M") -> tuple[list[dict], str, str]:
-    """Main entry point for ESM-2 scoring.
-    
-    Returns:
-        predictions: list of dicts with mutant info and esm2_score
-        model_name: full model identifier
-        device: cpu/cuda
-    """
+    """Main entry point for ESM-2 scoring."""
     model_name = MODEL_MAP.get(model_size, MODEL_MAP["650M"])
     model, tokenizer, device = load_esm2_model(model_name)
     
     mutants = generate_all_single_mutants(sequence)
-    print(f"Generated {len(mutants)} single-point mutants for sequence of length {len(sequence)}")
+    print(f"Generated {len(mutants)} single-point mutants for sequence of length {len(sequence)}", flush=True)
     
     predictions = score_all_mutants(sequence, mutants, model, tokenizer, device)
-    print(f"Scoring complete. Total mutants scored: {len(predictions)}")
+    print(f"Scoring complete. Total mutants scored: {len(predictions)}", flush=True)
     
     return predictions, model_name, device
