@@ -16,45 +16,54 @@ def find_proteingym_assay(
 ) -> Tuple[Optional[pd.DataFrame], Optional[str]]:
     """Find matching ProteinGym DMS assay for the given protein.
     
-    Match by UniProt ID or by exact sequence match.
+    Match by UniProt ID, or by exact sequence match, or by DMS_filename pattern.
     Returns DMS DataFrame and assay_id if found, None otherwise.
     
     Uses AWS S3 public dataset — no API key required.
     """
-    print("Loading ProteinGym DMS substitution benchmark...")
+    print("Loading ProteinGym DMS substitution benchmark...", flush=True)
     
-    # Load reference file to find matching assay
-    ref_url = "https://raw.githubusercontent.com/OATML-Markslab/ProteinGym/main/references/DMS_substitution_benchmark.csv"
+    # Load reference file
+    ref_url = "https://raw.githubusercontent.com/OATML-Markslab/ProteinGym/main/reference_files/DMS_substitutions.csv"
     ref_df = pd.read_csv(ref_url)
     
     # Try matching by UniProt ID
     if uniprot_id:
         matches = ref_df[ref_df["UniProt_ID"] == uniprot_id]
         if len(matches) > 0:
-            assay_name = matches.iloc[0]["DMS_id"]
-            print(f"Found ProteinGym assay: {assay_name}")
+            row = matches.iloc[0]
+            filename = row["DMS_filename"]
+            assay_name = row["DMS_id"]
+            print(f"Found ProteinGym assay: {assay_name}", flush=True)
             # Load from AWS S3 (public dataset, no auth needed)
-            s3_url = f"https://proteingym.s3.amazonaws.com/DMS_ProteinGym_substitutions/{assay_name}.csv"
+            s3_url = f"https://proteingym.s3.amazonaws.com/DMS_ProteinGym_substitutions/{filename}"
             dms_df = pd.read_csv(s3_url)
             return dms_df, assay_name
     
-    # Fallback: try HuggingFace dataset for sequence match
-    try:
-        dataset = load_dataset(
-            "OATML-Markslab/ProteinGym_v1",
-            name="DMS_substitutions",
-            trust_remote_code=True
-        )
-        df = dataset.to_pandas()
-        seq_matches = df[df["target_seq"] == sequence]
-        if len(seq_matches) > 0:
-            assay_id = seq_matches.iloc[0]["DMS_id"]
-            print(f"Matched by sequence: {assay_id}")
-            return seq_matches[["mutant", "DMS_score", "DMS_score_bin"]], assay_id
-    except Exception as e:
-        print(f"HuggingFace dataset access failed: {e}")
+    # Try sequence match
+    seq_upper = sequence.upper()
+    seq_matches = ref_df[ref_df["target_seq"] == seq_upper]
+    if len(seq_matches) > 0:
+        row = seq_matches.iloc[0]
+        filename = row["DMS_filename"]
+        assay_name = row["DMS_id"]
+        print(f"Matched by sequence: {assay_name}", flush=True)
+        s3_url = f"https://proteingym.s3.amazonaws.com/DMS_ProteinGym_substitutions/{filename}"
+        dms_df = pd.read_csv(s3_url)
+        return dms_df, assay_name
     
-    print("No matching ProteinGym assay found. Will output predictions only.")
+    # Try partial/substring sequence match
+    for _, row in ref_df.iterrows():
+        target = row["target_seq"]
+        if len(target) >= 50 and seq_upper[:50] == target[:50]:
+            filename = row["DMS_filename"]
+            assay_name = row["DMS_id"]
+            print(f"Matched by sequence prefix: {assay_name}", flush=True)
+            s3_url = f"https://proteingym.s3.amazonaws.com/DMS_ProteinGym_substitutions/{filename}"
+            dms_df = pd.read_csv(s3_url)
+            return dms_df, assay_name
+    
+    print("No matching ProteinGym assay found. Will output predictions only.", flush=True)
     return None, None
 
 
